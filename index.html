@@ -1,0 +1,333 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>Invoicer</title>
+<style>
+:root{--bg:#f6f7f9;--card:#fff;--ink:#14181f;--mute:#6b7280;--line:#e3e6ea;--acc:#2358d6;--ok:#16794a;--warn:#a15c07}
+@media(prefers-color-scheme:dark){:root{--bg:#0f1115;--card:#181b21;--ink:#e8eaee;--mute:#8b93a1;--line:#2a2f38;--acc:#6b95ff;--ok:#4cc28a;--warn:#e0a24a}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,system-ui,sans-serif;padding:0 16px 40px}
+main{max-width:860px;margin:0 auto}
+nav{display:flex;gap:4px;flex-wrap:wrap;padding:16px 0 12px;position:sticky;top:0;background:var(--bg);z-index:2}
+nav button{border:1px solid var(--line);background:var(--card);color:var(--ink);padding:8px 14px;border-radius:8px;font:inherit;cursor:pointer}
+nav button.on{background:var(--acc);border-color:var(--acc);color:#fff}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px;margin-bottom:14px}
+h2{margin:0 0 12px;font-size:18px}
+label{display:block;font-size:12px;color:var(--mute);margin:10px 0 4px}
+input,select,textarea{width:100%;padding:9px 10px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink);font:inherit}
+textarea{min-height:64px;resize:vertical}
+.row{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px}
+button.b{border:0;background:var(--acc);color:#fff;padding:9px 16px;border-radius:8px;font:inherit;cursor:pointer}
+button.g{border:1px solid var(--line);background:transparent;color:var(--ink);padding:7px 12px;border-radius:8px;font:inherit;cursor:pointer}
+button.x{border:0;background:transparent;color:var(--mute);cursor:pointer;font-size:18px}
+.bar{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px;align-items:center}
+.sp{flex:1}
+table{width:100%;border-collapse:collapse}
+td,th{padding:8px 6px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
+th{font-size:12px;color:var(--mute);font-weight:500}
+.r{text-align:right}
+.tbl{overflow-x:auto}
+.pill{font-size:12px;padding:2px 8px;border-radius:99px;border:1px solid var(--line)}
+.paid{color:var(--ok);border-color:var(--ok)}.sent{color:var(--acc);border-color:var(--acc)}.draft{color:var(--warn);border-color:var(--warn)}
+.mute{color:var(--mute)}
+.line{display:grid;grid-template-columns:3fr 70px 100px 28px;gap:6px;margin-bottom:6px}
+#sheet{display:none}
+#sheet.preview{display:block;position:fixed;inset:0;overflow:auto;background:#6b7280;padding:12px 12px 40px;z-index:10}
+#sheet .page{background:#fff;color:#000;width:210mm;min-height:297mm;padding:15mm;margin:0 auto;box-shadow:0 2px 14px rgba(0,0,0,.35);font:13px/1.45 -apple-system,system-ui,sans-serif}
+#sheet th{color:#555}
+#sheet td,#sheet th{border-color:#ccc}
+#sheet .pbar{position:sticky;top:0;display:flex;gap:8px;justify-content:center;padding-bottom:12px;z-index:1}
+#sheet .pbar button.g{background:#fff;color:#000;border-color:#999}
+.noprint{}
+@media print{
+  body{background:#fff;padding:0}
+  main,.noprint{display:none!important}
+  #sheet.preview{position:static;overflow:visible;padding:0;background:#fff}
+  #sheet{display:block}
+  #sheet table td,#sheet table th{border-color:#ccc;color:#000}
+  #sheet .page{width:auto;min-height:0;padding:15mm;margin:0;box-shadow:none;zoom:1!important}
+}
+@page{size:A4;margin:0}
+#sheet h1{margin:0 0 4px;font-size:28px}
+#sheet .hd{display:flex;justify-content:space-between;gap:24px;margin-bottom:28px}
+#sheet img{max-height:60px;max-width:180px}
+#sheet .tot{margin-left:auto;width:260px;margin-top:12px}
+#sheet .ft{margin-top:36px;padding-top:10px;border-top:1px solid #ccc;font-size:11px;color:#444;white-space:pre-wrap}
+</style>
+</head>
+<body>
+<main>
+  <nav id="nav"></nav>
+  <div id="view"></div>
+</main>
+<div id="sheet"></div>
+
+<script>
+const KEY = 'invoicer:v1';
+const blank = () => ({
+  business: {name:'',email:'',phone:'',address:'',taxId:'',payment:'',footer:'',logo:'',currency:'AUD',prefix:'INV-',next:1,taxDefault:0},
+  clients: [], items: [], invoices: []
+});
+let S = load();
+let tab = 'invoices';
+let cur = null; // invoice being edited
+let filt = {client:'', status:'', period:''};
+
+function load(){
+  try { localStorage.removeItem(KEY); } catch(e){}
+  try { const d = JSON.parse(sessionStorage.getItem(KEY)); if (d) return Object.assign(blank(), d, {business: Object.assign(blank().business, d.business)}); } catch(e){}
+  return blank();
+}
+let dirty = false;
+// ponytail: sessionStorage clears when the tab closes; export is the only way to keep new invoices
+window.addEventListener('beforeunload', e => { if (dirty) { e.preventDefault(); e.returnValue = ''; } });
+function save(){ dirty = true; try { sessionStorage.setItem(KEY, JSON.stringify(S)); } catch(e){ alert('Could not save: storage full or blocked. Export a backup.'); } }
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const uid = () => Math.random().toString(36).slice(2,10);
+const today = () => new Date().toISOString().slice(0,10);
+const addDays = (d,n) => { const x = new Date(d); x.setDate(x.getDate()+n); return x.toISOString().slice(0,10); };
+const money = n => { try { return new Intl.NumberFormat(undefined,{style:'currency',currencyDisplay:'narrowSymbol',currency:S.business.currency||'USD'}).format(n); } catch(e){ return Number(n).toFixed(2); } };
+
+// ponytail: money in floats, rounded to cents per line; switch to integer cents if rounding disputes arise
+const r2 = n => Math.round((Number(n)||0)*100)/100;
+function totals(inv){
+  const sub = r2(inv.lines.reduce((a,l)=>a + r2((+l.qty||0)*(+l.price||0)),0));
+  const tax = r2(sub*(+inv.taxRate||0)/100);
+  return {sub, tax, total: r2(sub+tax)};
+}
+function pad(n){ return String(n).padStart(3,'0'); }
+
+function newInvoice(){
+  const b = S.business;
+  return {id:uid(), number:null, clientId:'', client:null, issued:today(), due:addDays(today(),14),
+    lines:[{desc:'',qty:1,price:0}], taxRate:b.taxDefault||0, notes:b.payment||'', status:'draft'};
+}
+
+const tabs = [['invoices','Invoices'],['editor','New / Edit'],['clients','Clients'],['items','Items'],['settings','Settings']];
+function nav(){
+  document.getElementById('nav').innerHTML = tabs.map(([k,l]) => `<button class="${tab===k?'on':''}" data-tab="${k}">${l}</button>`).join('');
+}
+function go(t){ tab = t; render(); window.scrollTo(0,0); }
+
+function render(){
+  nav();
+  const v = document.getElementById('view');
+  v.innerHTML = ({invoices:vInvoices, editor:vEditor, clients:vClients, items:vItems, settings:vSettings})[tab]();
+}
+
+function vInvoices(){
+  const now = new Date(), y = now.getFullYear(), m = now.getMonth();
+  const monthStart = `${y}-${String(m+1).padStart(2,'0')}-01`;
+  const fyStart = `${m>=6 ? y : y-1}-07-01`; // Australian financial year: 1 Jul to 30 Jun
+  const since = {month:monthStart, fy:fyStart}[filt.period] || '';
+  const list = S.invoices
+    .filter(i => (!filt.client || i.clientId===filt.client) && (!filt.status || i.status===filt.status) && (!since || i.issued>=since))
+    .sort((a,b)=> (b.issued+b.id).localeCompare(a.issued+a.id));
+  const sum = f => r2(list.filter(f).reduce((a,i)=>a+totals(i).total,0));
+  const unpaid = sum(i=>i.status!=='paid' && i.number), paid = sum(i=>i.status==='paid'), all = sum(i=>i.number);
+  const sel = (k,opts) => `<select data-fl="${k}">${opts.map(([v,l])=>`<option value="${esc(v)}" ${filt[k]===v?'selected':''}>${esc(l)}</option>`).join('')}</select>`;
+  return `<div class="card"><h2>Invoices</h2>
+  <div class="row" style="margin-bottom:12px">
+    <div><label>Client</label>${sel('client',[['','All clients'],...S.clients.map(c=>[c.id,c.name])])}</div>
+    <div><label>Status</label>${sel('status',[['','All'],['draft','Draft'],['sent','Sent'],['paid','Paid']])}</div>
+    <div><label>Period</label>${sel('period',[['','All time'],['month','This month'],['fy','This financial year']])}</div>
+  </div>
+  <div class="row" style="margin-bottom:8px">
+    <div class="card" style="margin:0"><div class="mute" style="font-size:12px">Invoiced</div><b style="font-size:20px">${money(all)}</b></div>
+    <div class="card" style="margin:0"><div class="mute" style="font-size:12px">Paid</div><b style="font-size:20px">${money(paid)}</b></div>
+    <div class="card" style="margin:0"><div class="mute" style="font-size:12px">Outstanding</div><b style="font-size:20px">${money(unpaid)}</b></div>
+  </div>
+  <p class="mute">${list.length} of ${S.invoices.length} invoices shown</p>
+  ${list.length ? `<div class="tbl"><table><tr><th>No.</th><th>Client</th><th>Issued</th><th class="r">Total</th><th>Status</th><th></th></tr>
+  ${list.map(i=>`<tr><td>${esc(i.number||'(draft)')}</td><td>${esc(i.client?.name||'—')}</td><td>${esc(i.issued)}</td><td class="r">${money(totals(i).total)}</td>
+  <td><span class="pill ${i.status}">${i.status}</span></td>
+  <td class="r"><button class="g" data-edit="${i.id}">Open</button> <button class="x" data-del-inv="${i.id}" title="Delete">×</button></td></tr>`).join('')}</table></div>` : '<p class="mute">No invoices yet.</p>'}
+  <div class="bar"><button class="b" data-new>New invoice</button></div></div>`;
+}
+
+function vEditor(){
+  if (!cur) cur = newInvoice();
+  const i = cur, t = totals(i);
+  return `<div class="card"><h2>${i.number ? esc(i.number) : 'New invoice'}</h2>
+  <div class="row">
+    <div><label>Invoice no. (blank = automatic)</label><input data-f="number" value="${esc(i.number||'')}" placeholder="${esc(S.business.prefix + pad(S.business.next))}"></div>
+    <div><label>Client</label><select data-f="clientId"><option value="">— choose —</option>${S.clients.map(c=>`<option value="${c.id}" ${c.id===i.clientId?'selected':''}>${esc(c.name)}</option>`).join('')}</select></div>
+    <div><label>Issued</label><input type="date" data-f="issued" value="${esc(i.issued)}"></div>
+    <div><label>Due</label><input type="date" data-f="due" value="${esc(i.due)}"></div>
+    <div><label>Status</label><select data-f="status">${['draft','sent','paid'].map(s=>`<option ${s===i.status?'selected':''}>${s}</option>`).join('')}</select></div>
+  </div>
+  <label>Job location (printed under client, optional)</label><input data-f="location" value="${esc(i.location||'')}" placeholder="Perth Western Australia.">
+  <label>Lines (description · hours · rate; for expenses use 1 × amount)</label>
+  ${i.lines.map((l,n)=>`<div class="line"><input data-l="${n}.desc" value="${esc(l.desc)}" placeholder="Description"><input data-l="${n}.qty" type="number" step="any" value="${esc(l.qty)}"><input data-l="${n}.price" type="number" step="any" value="${esc(l.price)}"><button class="x" data-rm="${n}">×</button></div>`).join('')}
+  <div class="bar"><button class="g" data-addline>+ Line</button>
+  ${S.items.length?`<select id="pick" style="width:auto"><option value="">+ Saved item…</option>${S.items.map(x=>`<option value="${x.id}">${esc(x.desc)} (${money(x.price)})</option>`).join('')}</select>`:''}</div>
+  <div class="row"><div><label>Tax rate %</label><input type="number" step="any" data-f="taxRate" value="${esc(i.taxRate)}"></div></div>
+  <label>Notes / payment details</label><textarea data-f="notes">${esc(i.notes)}</textarea>
+  <p class="r" id="tot">Subtotal ${money(t.sub)} · Tax ${money(t.tax)} · <b>Total ${money(t.total)}</b></p>
+  <div class="bar"><button class="b" data-save>Save</button><button class="g" data-preview>Preview</button><button class="g" data-print>Print / PDF</button><span class="sp"></span><button class="g" data-cancel>Close</button></div></div>`;
+}
+
+function vClients(){
+  return `<div class="card"><h2>Clients</h2>
+  ${S.clients.map(c=>`<div class="card" style="background:var(--bg)"><div class="row">
+    <div><label>Name</label><input data-c="${c.id}.name" value="${esc(c.name)}"></div>
+    <div><label>Email</label><input data-c="${c.id}.email" value="${esc(c.email)}"></div>
+    <div><label>Attn</label><input data-c="${c.id}.attn" value="${esc(c.attn)}"></div>
+    <div><label>Phone</label><input data-c="${c.id}.phone" value="${esc(c.phone)}"></div>
+    <div><label>Hourly rate</label><input type="number" step="any" data-c="${c.id}.rate" value="${esc(c.rate)}"></div>
+    <div><label>ABN / Tax ID</label><input data-c="${c.id}.taxId" value="${esc(c.taxId)}"></div></div>
+    <label>Address</label><textarea data-c="${c.id}.address">${esc(c.address)}</textarea>
+    <div class="bar"><button class="g" data-del-c="${c.id}">Delete</button></div></div>`).join('')||'<p class="mute">No clients yet.</p>'}
+  <div class="bar"><button class="b" data-add-c>Add client</button></div></div>`;
+}
+
+function vItems(){
+  return `<div class="card"><h2>Saved items</h2>
+  ${S.items.map(x=>`<div class="line" style="grid-template-columns:3fr 110px 28px"><input data-it="${x.id}.desc" value="${esc(x.desc)}"><input data-it="${x.id}.price" type="number" step="any" value="${esc(x.price)}"><button class="x" data-del-it="${x.id}">×</button></div>`).join('')||'<p class="mute">No saved items.</p>'}
+  <div class="bar"><button class="b" data-add-it>Add item</button></div></div>`;
+}
+
+function vSettings(){
+  const b = S.business;
+  return `<div class="card"><h2>Your business</h2>
+  <div class="row">
+    <div><label>Business name</label><input data-b="name" value="${esc(b.name)}"></div>
+    <div><label>ABN / Tax ID</label><input data-b="taxId" value="${esc(b.taxId)}"></div>
+    <div><label>Email</label><input data-b="email" value="${esc(b.email)}"></div>
+    <div><label>Phone</label><input data-b="phone" value="${esc(b.phone)}"></div>
+    <div><label>Currency (ISO code)</label><input data-b="currency" value="${esc(b.currency)}" maxlength="3"></div>
+    <div><label>Default tax %</label><input data-b="taxDefault" type="number" step="any" value="${esc(b.taxDefault)}"></div>
+    <div><label>Number prefix</label><input data-b="prefix" value="${esc(b.prefix)}"></div>
+    <div><label>Next number</label><input data-b="next" type="number" min="1" value="${esc(b.next)}"></div>
+  </div>
+  <label>Address</label><textarea data-b="address">${esc(b.address)}</textarea>
+  <label>Default payment details</label><textarea data-b="payment">${esc(b.payment)}</textarea>
+  <label>Legal footer (printed on every invoice)</label><textarea data-b="footer">${esc(b.footer)}</textarea>
+  <label>Logo</label><input type="file" id="logo" accept="image/*">${b.logo?`<p><img src="${b.logo}" style="max-height:50px"> <button class="g" data-clear-logo>Remove</button></p>`:''}
+  </div>
+  <div class="card"><h2>Backup</h2>
+  <p class="mute">Data is wiped when you close this tab. Export before closing to keep new invoices, and Import next time.</p>
+  <div class="bar"><button class="b" data-export>Export JSON</button><button class="g" data-import>Import JSON</button><input type="file" id="imp" accept="application/json" hidden></div></div>`;
+}
+
+function sheet(inv){
+  const b = S.business, c = inv.client || {}, t = totals(inv);
+  const dmy = d => String(d||'').split('-').reverse().join('/');
+  return `<div class="page"><div class="hd"><div>${b.logo?`<img src="${b.logo}"><br>`:''}<b style="font-size:18px">${esc(b.name)}</b><br>${b.email?`Email: ${esc(b.email)}<br>`:''}${b.phone?`Phone: ${esc(b.phone)}<br>`:''}Address: <span style="white-space:pre-line">${esc(b.address)}</span>${b.taxId?`<br>ABN: ${esc(b.taxId)}`:''}</div>
+  <div style="text-align:right"><h1>INVOICE</h1>Invoice #: ${esc(inv.number||'DRAFT')}<br>Date: ${dmy(inv.issued)}<br>Due: ${dmy(inv.due)}</div></div>
+  <div style="margin-bottom:20px"><b>Bill To:</b><br>${esc(c.name||'')}${c.attn?`<br>Attn: ${esc(c.attn)}`:''}${c.phone?`<br>Phone: ${esc(c.phone)}`:''}${c.address?`<br><span style="white-space:pre-line">${esc(c.address)}</span>`:''}${c.taxId?`<br>ABN: ${esc(c.taxId)}`:''}</div>
+  ${inv.location?`<p>${esc(inv.location)}</p>`:''}
+  <table><tr><th>Description</th><th class="r">Hours</th><th class="r">Rate</th><th class="r">Amount</th></tr>
+  ${inv.lines.filter(l=>l.desc||+l.price).map(l=>`<tr><td>${esc(l.desc)}</td><td class="r">${esc(l.qty)}</td><td class="r">${money(l.price)}</td><td class="r">${money(r2((+l.qty||0)*(+l.price||0)))}</td></tr>`).join('')}</table>
+  <table class="tot"><tr><td>Subtotal</td><td class="r">${money(t.sub)}</td></tr>${+inv.taxRate?`<tr><td>Tax (${esc(inv.taxRate)}%)</td><td class="r">${money(t.tax)}</td></tr>`:''}<tr><td><b>Total</b></td><td class="r"><b>${money(t.total)}</b></td></tr></table>
+  ${inv.notes?`<p style="white-space:pre-line;margin-top:24px">${esc(inv.notes)}</p>`:''}
+  ${b.footer?`<div class="ft">${esc(b.footer)}</div>`:''}</div>`;
+}
+
+// ponytail: zero @page margin hides browser header/footer; a 2nd page would have no top margin
+function doPrint(){
+  document.title = 'Invoice ' + cur.number;
+  window.addEventListener('afterprint', () => { document.title = 'Invoicer'; }, {once:true});
+  window.print();
+}
+
+function showSheet(i, bar){
+  const el = document.getElementById('sheet');
+  el.className = 'preview';
+  el.innerHTML = `<div class="noprint pbar">${bar}</div>` + sheet(i);
+  const pg = el.querySelector('.page'), s = Math.min(1, (innerWidth - 24) / pg.offsetWidth);
+  if (s < 1) pg.style.zoom = s;
+  el.scrollTop = 0;
+}
+
+function commit(){
+  const i = cur, b = S.business;
+  i.client = S.clients.find(c=>c.id===i.clientId) ? {...S.clients.find(c=>c.id===i.clientId)} : i.client;
+  if (!i.number){ i.number = b.prefix + pad(b.next); b.next = (+b.next||1) + 1; }
+  const k = S.invoices.findIndex(x=>x.id===i.id);
+  if (k<0) S.invoices.push(i); else S.invoices[k] = i;
+  save();
+}
+
+document.addEventListener('click', e => {
+  const t = e.target.closest('button'); if (!t) return;
+  const d = t.dataset;
+  if (d.tab) return go(d.tab);
+  if ('new' in d){ cur = newInvoice(); return go('editor'); }
+  if (d.edit){ cur = JSON.parse(JSON.stringify(S.invoices.find(x=>x.id===d.edit))); return go('editor'); }
+  if (d.delInv){ if (t.dataset.sure){ S.invoices = S.invoices.filter(x=>x.id!==d.delInv); save(); return render(); } t.dataset.sure=1; t.textContent='Sure?'; return; }
+  if ('addline' in d){ cur.lines.push({desc:'',qty:1,price:0}); return render(); }
+  if (d.rm){ cur.lines.splice(+d.rm,1); if(!cur.lines.length) cur.lines.push({desc:'',qty:1,price:0}); return render(); }
+  if ('save' in d){ commit(); return render(); }
+  if ('cancel' in d){ cur = null; return go('invoices'); }
+  if ('preview' in d){
+    const i = JSON.parse(JSON.stringify(cur)), c = S.clients.find(c=>c.id===i.clientId);
+    if (c) i.client = {...c};
+    if (!i.number) i.number = S.business.prefix + pad(S.business.next);
+    return showSheet(i, '<button class="g" data-closeprev>Close preview</button><button class="b" data-saveprint>Save &amp; print / PDF</button>');
+  }
+  if ('closeprev' in d){ const el = document.getElementById('sheet'); el.className=''; el.innerHTML=''; return; }
+  if ('saveprint' in d){
+    commit(); showSheet(cur, '<button class="g" data-closeprev>Close preview</button>');
+    render(); return doPrint();
+  }
+  if ('print' in d){ commit(); document.getElementById('sheet').innerHTML = sheet(cur); render(); return doPrint(); }
+  if ('addC' in d){ S.clients.push({id:uid(),name:'',attn:'',phone:'',email:'',taxId:'',address:'',rate:''}); save(); return render(); }
+  if (d.delC){ if (t.dataset.sure){ S.clients = S.clients.filter(c=>c.id!==d.delC); save(); return render(); } t.dataset.sure=1; t.textContent='Sure?'; return; }
+  if ('addIt' in d){ S.items.push({id:uid(),desc:'',price:0}); save(); return render(); }
+  if (d.delIt){ S.items = S.items.filter(x=>x.id!==d.delIt); save(); return render(); }
+  if ('clearLogo' in d){ S.business.logo=''; save(); return render(); }
+  if ('export' in d){
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([JSON.stringify(S,null,2)],{type:'application/json'}));
+    a.download = `invoicer-backup-${today()}.json`; a.click(); dirty = false; return;
+  }
+  if ('import' in d) return document.getElementById('imp').click();
+});
+
+document.addEventListener('input', e => {
+  const t = e.target, d = t.dataset;
+  if (d.f){ cur[d.f] = t.value; if (d.f==='clientId') cur.client = null; }
+  else if (d.l){ const [n,k] = d.l.split('.'); cur.lines[+n][k] = t.value; }
+  else if (d.b){ S.business[d.b] = t.value; save(); }
+  else if (d.c){ const [id,k] = d.c.split('.'); S.clients.find(c=>c.id===id)[k] = t.value; save(); }
+  else if (d.it){ const [id,k] = d.it.split('.'); S.items.find(c=>c.id===id)[k] = t.value; save(); }
+  else return;
+  const tot = document.getElementById('tot');
+  if (cur && tot){ const x = totals(cur); tot.innerHTML = `Subtotal ${money(x.sub)} · Tax ${money(x.tax)} · <b>Total ${money(x.total)}</b>`; }
+});
+
+document.addEventListener('change', e => {
+  const t = e.target;
+  if (t.id==='pick' && t.value){ const x = S.items.find(i=>i.id===t.value), c = S.clients.find(c=>c.id===cur.clientId);
+    cur.lines.push({desc:x.desc,qty:1,price:(x.hourly && c && c.rate!=='' && c.rate!=null) ? c.rate : x.price}); render(); }
+  if (t.id==='logo' && t.files[0]){
+    const f = t.files[0];
+    if (f.size > 500000) return alert('Logo too large (max 500 KB).');
+    const r = new FileReader(); r.onload = () => { S.business.logo = r.result; save(); render(); }; r.readAsDataURL(f);
+  }
+  if (t.id==='imp' && t.files[0]){
+    const r = new FileReader();
+    r.onload = () => { try { const d = JSON.parse(r.result); if (!d.business||!d.invoices) throw 0; if (!confirm('Replace all current data with this backup?')) return; S = Object.assign(blank(), d); save(); dirty = false; cur=null; render(); } catch(e){ alert('Not a valid backup file.'); } };
+    r.readAsText(t.files[0]);
+  }
+  if (t.dataset.fl){ filt[t.dataset.fl] = t.value; render(); }
+  if (t.dataset.f==='clientId') render();
+});
+
+// run selfcheck() in the console
+function selfcheck(){
+  const inv = {lines:[{qty:2,price:10.005},{qty:1,price:5}], taxRate:10};
+  const t = totals(inv);
+  console.assert(t.sub===25.01 && t.tax===2.5 && t.total===27.51, 'totals', t);
+  console.assert(pad(7)==='007', 'pad');
+  console.log('selfcheck done');
+}
+
+render();
+</script>
+</body>
+</html>
